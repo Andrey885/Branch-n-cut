@@ -30,6 +30,21 @@ def greedy_coloring_heuristic(graph):
             color_map[node] = next(iter(used_colors - neighbors_colors))
     return len(used_colors), color_map
 
+def greedy_coloring_heuristic_multiple(graph):
+    '''
+    Greedy graph coloring heuristic with degree order rule
+    '''
+    color_num, color_map = greedy_coloring_heuristic(graph)
+    nodes = [node[0] for node in sorted(nx.degree(graph),
+                                        key=lambda x: x[1], reverse=True)]
+    color_map2 = {}
+    while len(nodes) != 0:
+        node = nodes.pop(0)
+        neighbors_colors = {color_map[neighbor] for neighbor in
+                            list(filter(lambda x: x in color_map, graph.neighbors(node)))}
+        color_map2[node] = [i for i in range(0, color_num) if not i in list(neighbors_colors)]
+    return color_num, color_map2
+
 def read_networkx_graph(file_path):
     '''
         Parse .col file and return graph object
@@ -51,75 +66,90 @@ def read_networkx_graph(file_path):
         return nx.Graph(edges), int(vertices_num)
 
 class Node():
-    def __init__(self, parent, ub,graph, obj, colnames, rows1, senses1, rhs1, rownames1):
+    def __init__(self, parent, ub,graph, prob, color_map,color_num, values, colnames):
         self.parent = parent
         self.ub = ub
         self.graph = graph
-        self.obj = obj
-        self.colnames = colnames # names of variables, always constant
-        self.rows = rows1 # left parts of constraints
-        self.senses = senses1 # types of constraints
-        self.rhs = rhs1 # right parts of constraints
-        self.rownames = rownames1 # names of constraints
+        self.prob = prob
+        self.color_map = color_map
+        self.color_num = color_num
+        self.prev_values = values
+        self.colnames = colnames
+        self.children = []
 
     def solve(self, current_best_integer_solution):
-        color_num, color_map = greedy_coloring_heuristic(self.graph) ## WARNING: modify it! Not best solution
         color_counter = 0
-        rows2 = []
-        tmp = np.zeros(n)
-        for k, v in sorted(color_map.items(), key=lambda item: item[1]):
-            if v == color_counter:
-                tmp[int(k) -1] = 1
-            else:
-                color_counter+=1
-                rows2.append([colnames, tmp.tolist()])
-                tmp = np.zeros(n)
-                tmp[int(k)-1] = 1
-        rows2.append([colnames, tmp.tolist()])
-        self.rows += rows2
-        self.rhs += np.ones(len(rows2)).tolist()
-        self.rownames += ['c'+str(i+1) for i in range(len(self.rownames), len(self.rownames)+len(rows2))]#names of constraints
-        self.senses += 'L'*len(rows2)
-        prob = cplex.Cplex()
-        prob.set_results_stream(None)
-        prob.objective.set_sense(prob.objective.sense.maximize)
-        prob.variables.add(obj=self.obj, names=self.colnames)
-        prob.linear_constraints.add(lin_expr=self.rows, senses=self.senses,
-                                    rhs=self.rhs, names=self.rownames)
-        self.prob = prob
-        prob.solve()
-        if prob.solution.status[prob.solution.get_status()] != 'optimal':
-            print('Not opt')
+        violation = np.zeros(self.color_num)
+        for i in range(color_num):
+            vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
+            violation[i] = np.sum(self.prev_values[vertexes])
+        if np.max(violation) == 1:
+            print('Found solution', np.sum(violation))
+            return np.sum(violation), self.prev_values
+        add_row = []
+        for i in range(len(violation)):
+            if violation[i] != max(violation):
+                continue
+            tmp = np.zeros(n)
+            vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
+            tmp[vertexes] = 1
+            add_row.append([self.colnames, tmp.tolist()])
+        self.prob.linear_constraints.add(lin_expr=add_row, senses='L'*len(add_row), rhs=[1]*len(add_row),
+                                    names=['c'+str(self.prob.linear_constraints.get_num()+i+1) for i in range(len(add_row))])
+
+        self.prob.solve()
+        if self.prob.solution.status[self.prob.solution.get_status()] != 'optimal':
             raise AssertionError('The solution is not optimal!')
-        solution = prob.solution.get_objective_value()
-        values = prob.solution.get_values()
+        solution = self.prob.solution.get_objective_value()
+        self.values = self.prob.solution.get_values()
+        # print(solution, values, color_map)
+        if solution <= self.ub:
+            return 0, 0
         self.ub = solution
+        self.children.append(Node(self, self.ub, self.graph, self.prob, self.color_map, self.color_num, self.values, self.colnames))
+        return solution, values
 
 
 if __name__ == '__main__':
-    graph, n = read_networkx_graph('../DIMACS_all_ascii/playground.clq')
+    graph, n = read_networkx_graph('../DIMACS_all_ascii/MANN_a9.clq')
     prob = cplex.Cplex()
     prob.set_results_stream(None)
     prob.objective.set_sense(prob.objective.sense.maximize)
     obj = np.ones(n)
     colnames = ['x'+str(i) for i in range(n)]
     prob.variables.add(obj=obj, names=colnames)
-    rhs1 = np.ones(n).tolist() #right parts of constraints
-    senses1 = 'L' * n #all constraints are '<='
-    rownames1 = ['b'+str(i+1) for i in range(n)]#names of constraints
-    rows1 = []
+    rhs = np.ones(n).tolist() #right parts of constraints
+    senses = 'L' * n #all constraints are '<='
+    rownames = ['b'+str(i+1) for i in range(n)]#names of constraints
+    rows = []
     for i in range(n):
         a = np.zeros(n)
         a[i] = 1
-        rows1.append([colnames, a.tolist()])
-
-
-    parent_node = Node(None, n, graph, obj, colnames, rows1, senses1, rhs1, rownames1)
-
+        rows.append([colnames, a.tolist()])
+    color_num, color_map = greedy_coloring_heuristic_multiple(graph) ## WARNING: modify it! Not best solution
+    color_counter = 0
+    rows2 = []
+    for i in range(color_num):
+        tmp = np.zeros(n)
+        vertexes = [int(k)-1 for k, v in color_map.items() if i in v]
+        tmp[np.array(vertexes)] = 1
+        rows2.append([colnames, tmp.tolist()])
+    rows += rows2
+    rhs += np.ones(len(rows2)).tolist()
+    rownames += ['c'+str(i+1) for i in range(len(rownames), len(rownames)+len(rows2))]#names of constraints
+    senses += 'L'*len(rows2)
+    prob = cplex.Cplex()
+    prob.set_results_stream(None)
+    prob.objective.set_sense(prob.objective.sense.maximize)
+    prob.variables.add(obj=obj, names=colnames)
+    prob.linear_constraints.add(lin_expr=rows, senses=senses, rhs=rhs, names=rownames)
+    prob.solve()
+    solution = prob.solution.get_objective_value()
+    values = prob.solution.get_values()
+    parent_node = Node(None, n, graph,prob, color_map,color_num, np.array(values), colnames)
     current_best_integer_solution = 0
     max_possible_solution = 0
     solution, values = parent_node.solve(current_best_integer_solution)
-    exit()
     max_possible_solution = solution
     if np.sum(abs(values - np.array(values).astype(int))) == 0:
         print('Already integer solution for such data!')
@@ -144,7 +174,7 @@ if __name__ == '__main__':
         if solution > current_best_integer_solution:
             current_best_integer_solution = solution
             current_best_values = values
-        while node.any_solution <= current_best_integer_solution or node.ub <= current_best_integer_solution or len(node.children) == 0:
+        while node.ub <= current_best_integer_solution or len(node.children) == 0:
             node.children = []
             node = node.parent
             current_depth_position-=1
