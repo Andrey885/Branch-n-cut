@@ -72,18 +72,22 @@ def get_neighbours_graph(graph, vertex):
     return graph.subgraph(neighbours)
 
 class Node():
-    def __init__(self, parent, ub,graph, prob, fix_vertex, add_constraints):
+    def __init__(self, parent, original_graph, clique, ub,graph, prob, fix_vertex, add_constraints):
+        self.original_graph = original_graph
+        self.n = np.max(np.array([x for x in original_graph.nodes], dtype = int))
         self.parent = parent
         self.ub = ub
         self.graph = graph
         self.fix_vertex = fix_vertex
         self.add_row = add_constraints
+        self.clique = clique
         self.children = []
         self.prob = prob
 
     def solve(self, current_best_integer_solution):
-        colnames = [x for x in self.graph.nodes]
+        colnames = [x for x in self.original_graph.nodes]
         if self.fix_vertex:
+            self.clique.append(self.fix_vertex)
             new_graph = get_neighbours_graph(self.graph, str(int(self.fix_vertex)))
             pruned_vertexes = [x for x in new_graph.nodes if not x in self.graph.nodes]
             self.graph = new_graph
@@ -92,11 +96,11 @@ class Node():
             for i in pruned_vertexes:
                 tmp = np.zeros(len(colnames))
                 tmp[int(i)-1] = 1
-                add_row.append([colnames, tmp.tolist()])
+                self.add_row.append([colnames, tmp.tolist()])
             self.prob.linear_constraints.add(lin_expr=self.add_row, senses='L'*len(self.add_row), rhs=[0]*len(self.add_row),
-                                        names=['c'+str(self.prob.linear_constraints.get_num()+i+1) for i in range(len(self.add_row))])
+                                    names=['c'+str(self.prob.linear_constraints.get_num()+i+1) for i in range(len(self.add_row))])
             add_row2 = []
-            tmp = np.zeros(len(colnames))
+            tmp = np.zeros(self.n)
             tmp[int(self.fix_vertex)-1] = 1
             add_row2.append([colnames, tmp.tolist()])
             self.prob.linear_constraints.add(lin_expr=add_row2, senses='G'*len(add_row2), rhs=[1]*len(add_row2),
@@ -104,7 +108,7 @@ class Node():
 
         else:
             self.prob.linear_constraints.add(lin_expr=self.add_row, senses='L'*len(self.add_row), rhs=[1]*len(self.add_row),
-                                        names=['c'+str(self.prob.linear_constraints.get_num()+i+1) for i in range(len(self.add_row))])
+                                    names=['c'+str(self.prob.linear_constraints.get_num()+i+1) for i in range(len(self.add_row))])
         # exit()
         self.prob.solve()
         solution = self.prob.solution.get_objective_value()
@@ -120,18 +124,18 @@ class Node():
             if self.check_clique(np.argwhere(values==1).squeeze()+1):
                 print('Found better', solution)
                 return solution, values
+            # print(values, self.clique)
             for i in range(len(values)):
-                if abs(values[i]) < num_presicion:
-                    continue # everything's ok, no need to branch
+
+                if abs(values[i]) < num_presicion or str(i+1) in self.clique or not str(i+1) in self.graph.nodes:## WARNING: last is not ok
+                    continue
                 else:
-                    # print(values)
-                    # print(self.graph, i+1)
-                    self.children.append(Node(self, self.ub, self.graph, self.prob, str(i+1), []))
+                    self.children.append(Node(self, self.original_graph, self.clique, self.ub, self.graph, self.prob, str(i+1), []))
         add_row = []
         for i in range(len(violation)):
             if violation[i] != max(violation):
                 continue
-            tmp = np.zeros(len(colnames))
+            tmp = np.zeros(self.n)
             vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
             tmp[vertexes] = 1
             add_row.append([colnames, tmp.tolist()])
@@ -140,16 +144,16 @@ class Node():
             return 0, 0
         # self.ub = solution
         # for fix_vertex in np.array([str(x) for x in np.sort(np.array(self.graph.nodes).astype(int))])[values==1]:
-        self.children.append(Node(self, self.ub, self.graph, self.prob, None, add_row))
-
+        if not self.fix_vertex:
+            self.children.append(Node(self,self.original_graph, self.clique, self.ub, self.graph, self.prob, None, add_row))
         return solution, values
 
     def check_clique(self, values):
         new_graph = self.graph.copy()
         for node in values:
-            new_graph = get_neighbours_graph(new_graph, str(int(node)))
+            if str(int(node)) in new_graph:
+                new_graph = get_neighbours_graph(new_graph, str(int(node)))
         return len(new_graph.nodes) == len(self.graph.nodes)
-
 
 def main():
     graph, n = read_networkx_graph('../DIMACS_all_ascii/MANN_a9.clq')
@@ -169,29 +173,36 @@ def main():
     prob.objective.set_sense(prob.objective.sense.maximize)
     prob.variables.add(obj=obj, names=colnames)
     prob.linear_constraints.add(lin_expr=rows, senses=senses, rhs=rhs, names=rownames)
-    parent_node = Node(None, 0, graph, prob, None, [])
+    parent_node = Node(None, graph, [], 0, graph, prob, None, [])
+    node = parent_node
     # parent_node.solve(0)
     current_best_integer_solution = 0
     max_possible_solution = 0
     solution, values = parent_node.solve(current_best_integer_solution)
     max_possible_solution = solution
-    node = parent_node
     first_layer_size = len(parent_node.children)
     max_tree_depth = 0
     current_depth_position = 0
     current_progress = 1 - len(parent_node.children)/first_layer_size
     print(datetime.now(), 'Current progress: ', current_progress, ', best solution', current_best_integer_solution, ', max tree depth on last stage: ', max_tree_depth)
     i = 0
+    values_prev = values_prev_prev = np.zeros(n)
     while len(parent_node.children) != 0:
         while(len(node.children) != 0): #go down one branch
             node = node.children[0]
             current_depth_position+=1
             solution, values = node.solve(current_best_integer_solution)
-            i+=1
-            node.prob.solution.write('./problems/'+str(i))
-            if i==10:
-                exit()
-        exit()
+            # print(node.clique)
+            # if np.sum(abs(values - values_prev))==0 and np.sum(abs(values_prev_prev-values)) == 0:
+            #     raise AssertionError('Not updating!')
+            values_prev_prev = values_prev
+            values_prev = values
+            # print(values)
+            # i+=1
+            # node.prob.write('./problems/'+str(i)+'.lp')
+            # if i==21:
+            #     exit()
+        # exit()
         if current_depth_position > max_tree_depth:
             max_tree_depth = current_depth_position
         if solution > current_best_integer_solution:
@@ -218,6 +229,5 @@ def main():
             print('Final solution: ', current_best_integer_solution)
             print('Optimal values: ', dict(zip(colnames, current_best_values)))
             exit()
-
 if __name__ == '__main__':
     main()
