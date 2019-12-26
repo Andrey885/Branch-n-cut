@@ -33,19 +33,6 @@ def greedy_coloring_heuristic(graph):
             color_map[node] = next(iter(used_colors - neighbors_colors))
     return len(used_colors), color_map
 
-def greedy_coloring_heuristic_multiple(graph):
-    '''
-    Greedy graph coloring heuristic with degree order rule
-    '''
-    color_num, color_map = greedy_coloring_heuristic(graph)
-    nodes = [x for x in graph.nodes].copy()
-    color_map2 = {}
-    while len(nodes) != 0:
-        node = nodes.pop(0)
-        neighbors_colors = [color_map[neighbor] for neighbor in graph.neighbors(node)]
-        color_map2[node] = [i for i in range(0, color_num) if not i in neighbors_colors]
-    return color_num, color_map2
-
 def read_networkx_graph(file_path):
     '''
         Parse .col file and return graph object
@@ -95,55 +82,91 @@ class Node():
         self.prob = prob
         prob.solve()
         solution = prob.solution.get_objective_value()
-        # print(solution)
         values = np.array(prob.solution.get_values())
         if solution <= current_best_integer_solution or len(self.graph.nodes)==0:
             self.ub = 0
             return 0, 0
+        # print(self.graph.nodes)
         self.color_num, self.color_map = greedy_coloring_heuristic(self.graph)
-        # self.color_num, self.color_map = greedy_coloring_heuristic_multiple(self.graph)
-        self.ub = self.color_num# + len(self.clique)
+        self.ub = min(solution, self.color_num)
         if self.ub <= current_best_integer_solution:
             return 0, 0
         color_counter = 0
         violation = np.zeros(self.color_num)
+        color_map_augmented = []
         for i in range(self.color_num):
-            vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i == v])
+            # vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i == v])
+            vertexes = [k for k, v in self.color_map.items() if v == i]
+            nodes = [x for x in self.graph.nodes]
+            for vertex in vertexes:
+                for neighbor in self.graph.neighbors(vertex):
+                    if neighbor in nodes:
+                        nodes.remove(neighbor)
+            vertexes = nodes
+            vertexes = np.array([int(v)-1 for v in vertexes])
+            color_map_augmented.append(vertexes)
             violation[i] = np.sum(values[vertexes])
-        add_row = []
+        color_map_augmented = np.array(color_map_augmented)
+        # print(values, self.clique, self.nonclique)
         if np.max(violation) > 1:
-            for i in range(len(violation)):
-                if violation[i] != max(violation):
-                    continue
+            for vertexes in color_map_augmented[violation > 1]:
+                add_row = []
                 tmp = np.zeros(n)
-                vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i == v])
                 tmp[vertexes] = 1
                 add_row.append([colnames, tmp.tolist()])
-            self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
+                self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
                             self.rhs + [1]*len(add_row),self.senses+'L'*len(add_row), bnb_mode = self.bnb_mode))
-        elif not self.bnb_mode:
-            add_row = self.add_exponnential_constraints()
-            self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
-                            self.rhs + [1]*len(add_row),self.senses+'L'*len(add_row), bnb_mode = self.bnb_mode))
+        # elif not self.bnb_mode:
+        #     add_row = self.add_exponential_constraints()
+        #     self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
+        #                     self.rhs + [1]*len(add_row),self.senses+'L'*len(add_row), bnb_mode = self.bnb_mode))
+        elif np.sum(abs(values - values.astype(int))) <  num_presicion*len(values):
+            for i in np.argwhere(values==1).squeeze():
+                if str(i+1) in self.clique:
+                    continue
+                if not str(i+1) in self.graph and not str(i+1) in self.nonclique:
+                    tmp = np.zeros(n)
+                    tmp[i] = 1
+                    self.children.append(Node(self, self.clique, self.nonclique+[str(i+1)],self.graph, self.rows + [[colnames, tmp]],
+                                    self.rownames + ['c'+str(len(self.rownames) + 1)],
+                                    self.rhs + [0],self.senses+'L', bnb_mode = self.bnb_mode))
+                    continue
+                tmp = np.zeros(n)
+                tmp[i] = 1
+                self.children.append(Node(self, self.clique+[str(i+1)], self.nonclique, get_neighbours_graph(self.graph, str(i+1)), self.rows + [[colnames, tmp]],
+                                self.rownames + ['c'+str(len(self.rownames) + 1)],
+                                self.rhs + [1],self.senses+'G', bnb_mode = self.bnb_mode))
         elif np.sum(abs(values - values.astype(int))) > num_presicion*len(values):
             for i in range(len(values)):
                 if abs(values[i] - int(values[i])) > num_presicion:
                     tmp = np.zeros(n)
                     tmp[i] = 1
-                    self.children.append(Node(self, self.clique+[str(i+1)], self.nonclique, self.graph, self.rows + [[colnames, tmp]],
-                                    self.rownames + ['c'+str(len(self.rownames) + 1)],
-                                    self.rhs + [1],self.senses+'G', bnb_mode = self.bnb_mode))
-                    self.children.append(Node(self, self.clique, self.nonclique+[str(i+1)], self.graph, self.rows + [[colnames, tmp]],
-                                    self.rownames + ['c'+str(len(self.rownames) + 1)],
-                                    self.rhs + [0],self.senses+'L', bnb_mode = self.bnb_mode))
-        # elif self.check_clique(values):
-        else:
-            self.clique = [str(int(i+1)) for i in np.argwhere(values == 1).squeeze()]
-
+                    if not str(i+1) in self.clique and str(i+1) in self.graph.nodes:
+                        self.children.append(Node(self, self.clique+[str(i+1)], self.nonclique, get_neighbours_graph(self.graph, str(i+1)), self.rows + [[colnames, tmp]],
+                                        self.rownames + ['c'+str(len(self.rownames) + 1)],
+                                        self.rhs + [1],self.senses+'G', bnb_mode = self.bnb_mode))
+                    if not str(i+1) in self.nonclique and str(i+1) in self.graph.nodes:
+                        self.children.append(Node(self, self.clique, self.nonclique+[str(i+1)], get_nonneighbours_graph(self.graph, str(i+1)), self.rows + [[colnames, tmp]],
+                                        self.rownames + ['c'+str(len(self.rownames) + 1)],
+                                        self.rhs + [0],self.senses+'L', bnb_mode = self.bnb_mode))
+        # else:
+            # if self.check_clique(values):
+                # self.clique = [str(int(i+1)) for i in np.argwhere(values == 1).squeeze()]
+            # else:
+            #     print(self.bnb_mode)
+            #     raise AssertionError()
         return len(self.clique), values
 
-    def add_exponnential_constraints(self):
-        complement = nx.complement(self.graph)
+    def check_clique(self, values):
+        clique = original_graph.subgraph([str(i+1) for i in np.argwhere(values==1).squeeze()])
+        for node in clique:
+            clique = get_neighbours_graph(clique, str(int(node)))
+        if len(clique.nodes) == len(values[values==1]):
+            self.checked = True
+        return self.checked
+
+    def add_exponential_constraints(self):
+        complement = nx.complement(original_graph)
         self.bnb_mode = True
         add_row = []
         for edge in complement.edges:
@@ -153,24 +176,13 @@ class Node():
             add_row.append([colnames, tmp])
         return add_row
 
-    def check_clique(self, values):
-        clique = original_graph.subgraph([str(int(i+1)) for i in np.argwhere(values == 1).squeeze()])
-        clique_old = clique.copy()
-        for node in clique:
-            if not str(int(node)) in clique.nodes:
-                clique = original_graph.subgraph([])
-                break
-            clique = get_neighbours_graph(clique, str(int(node)))
-        if len(clique.nodes) == len(clique_old.nodes):
-            self.checked = True
-
-        return self.checked
-
 if __name__ == '__main__':
     # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/playground.clq')
     # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/johnson8-2-4.clq')
+    # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/MANN_a9.clq')
     original_graph, n = read_networkx_graph('../DIMACS_all_ascii/hamming6-2.clq')
-    # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/brock200_1.clq')
+    # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/brock200_2.clq')
+    # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/C125.9.clq')
     obj = np.ones(n)
     colnames = [x for x in original_graph.nodes]
     rhs = np.ones(n).tolist()
@@ -198,23 +210,36 @@ if __name__ == '__main__':
             node = node.children[0]
             current_depth_position+=1
             solution, values = node.solve(current_best_integer_solution)
+            # print(current_depth_position, len(node.children), node.bnb_mode, node.ub)
         if current_depth_position > max_tree_depth:
             max_tree_depth = current_depth_position
         if len(node.clique) > current_best_integer_solution:
             print('Found better', len(node.clique))
             current_best_integer_solution = len(node.clique)
+            best_clique = node.clique
             current_best_values = values
         while (node.ub <= current_best_integer_solution or len(node.children) == 0) and node != parent_node:
             node.children = []
             node = node.parent
             current_depth_position-=1
+        if node == parent_node and len(node.children)!= 0:
+            for child in node.children:
+                if len(node.children[0].clique) != 0:
+                    child.nonclique.append(node.children[0].clique[0])
+                    if node.children[0].clique[0] in child.graph.nodes:
+                        child.graph = get_nonneighbours_graph(child.graph, node.children[0].clique[0])
+                    tmp = np.zeros(n)
+                    tmp[int(node.children[0].clique[0])-1] = 1
+                    child.rows += [[colnames, tmp]]
+                    child.rownames += ['c'+str(len(child.rownames) + 1)]
+                    child.rhs += [0]
+                    child.senses+='L'
         node.children.pop(0)
 
         while len(node.children) == 0 and node!=parent_node: # return up the branch until a good possibility exists
             node = node.parent
             current_depth_position-=1
             node.children.pop(0) # have just been there
-
         if 1 - len(parent_node.children)/first_layer_size != current_progress:
             current_progress = 1 - len(parent_node.children)/first_layer_size
             print(datetime.now(), 'Current progress: ', current_progress, ', best solution', current_best_integer_solution, ', max tree depth on last stage: ', max_tree_depth)
@@ -223,5 +248,5 @@ if __name__ == '__main__':
         if current_depth_position == 0 and len(node.children)==0:
             print('The search is finished!')
             print('Final solution: ', current_best_integer_solution)
-            # print('Optimal values: ', dict(zip(colnames, current_best_values)))
+            print('Best clique: ', best_clique)
             exit()
