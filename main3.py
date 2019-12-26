@@ -102,13 +102,13 @@ class Node():
             # print('Bad branch')
             self.ub = 0
             return 0, 0
-        # self.color_num, self.color_map = greedy_coloring_heuristic_(self.graph)
-        self.color_num, self.color_map = greedy_coloring_heuristic_multiple(self.graph)
+        self.color_num, self.color_map = greedy_coloring_heuristic(self.graph)
+        # self.color_num, self.color_map = greedy_coloring_heuristic_multiple(self.graph)
         self.ub = self.color_num# + len(self.clique)
         color_counter = 0
         violation = np.zeros(self.color_num)
         for i in range(self.color_num):
-            vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
+            vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i == v])
             violation[i] = np.sum(values[vertexes])
         add_row = []
         if np.max(violation) > 1:
@@ -116,7 +116,7 @@ class Node():
                 if violation[i] != max(violation):
                     continue
                 tmp = np.zeros(n)
-                vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
+                vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i == v])
                 tmp[vertexes] = 1
                 add_row.append([colnames, tmp.tolist()])
             self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
@@ -138,9 +138,7 @@ class Node():
             clique = get_neighbours_graph(clique, str(int(node)))
         if len(clique.nodes) == len(self.clique):
             self.checked = True
-            # print('Found better', len(self.clique))
-        # else:
-        for i in np.argwhere(values==1).squeeze():
+        for i in range(len(values)):
             if str(i+1) in self.clique or str(i+1) in self.nonclique or not str(i+1) in self.graph:
                 continue
             tmp = np.zeros(n)
@@ -148,9 +146,6 @@ class Node():
             pruned_graph = get_neighbours_graph(self.graph, str(i+1))
             self.children.append(Node(self, self.clique + [str(i+1)], self.nonclique, pruned_graph, self.rows + [[colnames, tmp.tolist()]], self.rownames + ['c'+str(len(self.rownames) + 1)],
                             self.rhs + [1],self.senses+'G'))
-        for i in np.argwhere(values==0).squeeze():
-            if str(i+1) in self.clique or str(i+1) in self.nonclique or not str(i+1) in self.graph:
-                continue
             tmp = np.zeros(n)
             tmp[i] = 1
             pruned_graph = get_nonneighbours_graph(self.graph.copy(), str(i+1))
@@ -159,6 +154,7 @@ class Node():
         return self.checked
 
 if __name__ == '__main__':
+    # original_graph, n = read_networkx_graph('../DIMACS_all_ascii/playground.clq')
     original_graph, n = read_networkx_graph('../DIMACS_all_ascii/MANN_a9.clq')
     obj = np.ones(n)
     colnames = [x for x in original_graph.nodes]
@@ -190,13 +186,14 @@ if __name__ == '__main__':
             # print(node.ub, len(node.children))
             if len(node.children) == 0 and not node.checked and not solution == 0:
                 raise AssertionError('Not correct result!')
-            # print('Children num:', len(node.children), 'clique', node.clique)
+            # print(current_depth_position)
+            # print('parent', node.parent, 'Children num:', len(node.children), 'clique', node.clique, 'ub', node.ub,'best', current_best_integer_solution)
         # exit()
         if current_depth_position > max_tree_depth:
             max_tree_depth = current_depth_position
         if len(node.clique) > current_best_integer_solution and node.checked:
             print('Found better', len(node.clique))
-            current_best_integer_solution = solution
+            current_best_integer_solution = len(node.clique)
             current_best_values = values
         while (node.ub <= current_best_integer_solution or len(node.children) == 0) and node != parent_node:
             node.children = []
