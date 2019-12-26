@@ -1,3 +1,5 @@
+import sys
+sys.path.append('/usr/local/lib/python3.7/dist-packages/')
 import cplex
 import numpy as np
 import networkx as nx
@@ -10,6 +12,8 @@ def greedy_coloring_heuristic(graph):
     '''
     Greedy graph coloring heuristic with degree order rule
     '''
+    if len(graph.nodes) == 0:
+        return 0, {}
     color_num = iter(range(0, len(graph)))
     color_map = {}
     used_colors = set()
@@ -34,14 +38,12 @@ def greedy_coloring_heuristic_multiple(graph):
     Greedy graph coloring heuristic with degree order rule
     '''
     color_num, color_map = greedy_coloring_heuristic(graph)
-    nodes = [node[0] for node in sorted(nx.degree(graph),
-                                        key=lambda x: x[1], reverse=True)]
+    nodes = [x for x in graph.nodes].copy()
     color_map2 = {}
     while len(nodes) != 0:
         node = nodes.pop(0)
-        neighbors_colors = {color_map[neighbor] for neighbor in
-                            list(filter(lambda x: x in color_map, graph.neighbors(node)))}
-        color_map2[node] = [i for i in range(0, color_num) if not i in list(neighbors_colors)]
+        neighbors_colors = [color_map[neighbor] for neighbor in graph.neighbors(node)]
+        color_map2[node] = [i for i in range(0, color_num) if not i in neighbors_colors]
     return color_num, color_map2
 
 
@@ -72,9 +74,10 @@ def get_nonneighbours_graph(graph, vertex):
     return graph.subgraph(nonneighbours)
 
 class Node():
-    def __init__(self, parent_node, clique, graph,rows, rownames, rhs,senses):
+    def __init__(self, parent_node, clique,nonclique, graph,rows, rownames, rhs,senses):
         self.parent = parent_node
         self.clique = clique
+        self.nonclique = nonclique
         self.children = []
         self.graph = graph
         self.rows = rows
@@ -93,12 +96,15 @@ class Node():
         self.prob = prob
         prob.solve()
         solution = prob.solution.get_objective_value()
+        # print(solution)
         values = np.array(prob.solution.get_values())
-        self.ub = solution
-        if solution <= current_best_integer_solution:
-            print('Bad branch')
+        if solution <= current_best_integer_solution or len(self.graph.nodes)==0:
+            # print('Bad branch')
+            self.ub = 0
             return 0, 0
+        # self.color_num, self.color_map = greedy_coloring_heuristic_(self.graph)
         self.color_num, self.color_map = greedy_coloring_heuristic_multiple(self.graph)
+        self.ub = self.color_num# + len(self.clique)
         color_counter = 0
         violation = np.zeros(self.color_num)
         for i in range(self.color_num):
@@ -113,28 +119,44 @@ class Node():
                 vertexes = np.array([int(k)-1 for k, v in self.color_map.items() if i in v])
                 tmp[vertexes] = 1
                 add_row.append([colnames, tmp.tolist()])
-            self.children.append(Node(self, self.clique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
+            self.children.append(Node(self, self.clique, self.nonclique, self.graph, self.rows + add_row, self.rownames + ['c'+str(len(self.rownames) + i + 1) for i in range(len(add_row))],
                             self.rhs + [1]*len(add_row),self.senses+'L'*len(add_row)))
         else:
             self.check_clique(values)
-        return solution, values
+        return len(self.clique), values
 
     def check_clique(self, values):
-        nodes = np.argwhere(values==1).squeeze()+1
-        new_graph = self.graph.copy()
-        for node in nodes:
-            if str(int(node)) in new_graph:
-                new_graph = get_neighbours_graph(new_graph, str(int(node)))
-        if len(new_graph.nodes) == len(self.graph.nodes):
+        # nodes = np.argwhere(values==1).squeeze()+1
+        # new_graph = self.graph.copy()
+        # for node in nodes:
+        #     if str(int(node)) in new_graph:
+        #         new_graph = get_neighbours_graph(new_graph, str(int(node)))
+        # if len(new_graph.nodes) == len(self.graph.nodes):
+        #     self.checked = True
+        clique = original_graph.subgraph(self.clique)
+        for node in clique:
+            clique = get_neighbours_graph(clique, str(int(node)))
+        if len(clique.nodes) == len(self.clique):
             self.checked = True
-        else:
-            for i in np.argwhere(values==1).squeeze():
-                tmp = np.zeros(n)
-                tmp[i] = 1
-                pruned_graph = get_neighbours_graph(self.graph, str(i+1))
-                self.children.append(Node(self, self.clique + [str(i+1)], pruned_graph, self.rows + [[colnames, tmp.tolist()]], self.rownames + ['c'+str(len(self.rownames) + 1)],
-                                self.rhs + [1],self.senses+'G'))
-        return len(new_graph.nodes) == len(self.graph.nodes)
+            # print('Found better', len(self.clique))
+        # else:
+        for i in np.argwhere(values==1).squeeze():
+            if str(i+1) in self.clique or str(i+1) in self.nonclique or not str(i+1) in self.graph:
+                continue
+            tmp = np.zeros(n)
+            tmp[i] = 1
+            pruned_graph = get_neighbours_graph(self.graph, str(i+1))
+            self.children.append(Node(self, self.clique + [str(i+1)], self.nonclique, pruned_graph, self.rows + [[colnames, tmp.tolist()]], self.rownames + ['c'+str(len(self.rownames) + 1)],
+                            self.rhs + [1],self.senses+'G'))
+        for i in np.argwhere(values==0).squeeze():
+            if str(i+1) in self.clique or str(i+1) in self.nonclique or not str(i+1) in self.graph:
+                continue
+            tmp = np.zeros(n)
+            tmp[i] = 1
+            pruned_graph = get_nonneighbours_graph(self.graph.copy(), str(i+1))
+            self.children.append(Node(self, self.clique, self.nonclique + [str(i+1)], pruned_graph, self.rows + [[colnames, tmp.tolist()]], self.rownames + ['c'+str(len(self.rownames) + 1)],
+                            self.rhs + [0],self.senses+'L'))
+        return self.checked
 
 if __name__ == '__main__':
     original_graph, n = read_networkx_graph('../DIMACS_all_ascii/MANN_a9.clq')
@@ -149,7 +171,7 @@ if __name__ == '__main__':
         a[i] = 1
         rows.append([colnames, a.tolist()])
 
-    parent_node = Node(None,[], original_graph, rows, rownames, rhs, senses)
+    parent_node = Node(None,[],[], original_graph, rows, rownames, rhs, senses)
     node = parent_node
     node.solve(0)
     # parent_node.solve(0)
@@ -165,17 +187,21 @@ if __name__ == '__main__':
             node = node.children[0]
             current_depth_position+=1
             solution, values = node.solve(current_best_integer_solution)
-            if len(node.children) == 0 and not node.checked:
+            # print(node.ub, len(node.children))
+            if len(node.children) == 0 and not node.checked and not solution == 0:
                 raise AssertionError('Not correct result!')
-        exit()
+            # print('Children num:', len(node.children), 'clique', node.clique)
+        # exit()
         if current_depth_position > max_tree_depth:
             max_tree_depth = current_depth_position
-        if solution > current_best_integer_solution:
+        if len(node.clique) > current_best_integer_solution and node.checked:
+            print('Found better', len(node.clique))
             current_best_integer_solution = solution
             current_best_values = values
         while (node.ub <= current_best_integer_solution or len(node.children) == 0) and node != parent_node:
             node.children = []
             node = node.parent
+            # print(len(node.children), node.ub)
             current_depth_position-=1
         node.children.pop(0)
 
@@ -192,5 +218,5 @@ if __name__ == '__main__':
         if current_depth_position == 0 and len(node.children)==0:
             print('The search is finished!')
             print('Final solution: ', current_best_integer_solution)
-            print('Optimal values: ', dict(zip(colnames, current_best_values)))
+            # print('Optimal values: ', dict(zip(colnames, current_best_values)))
             exit()
